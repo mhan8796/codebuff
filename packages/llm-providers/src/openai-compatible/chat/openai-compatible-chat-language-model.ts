@@ -19,7 +19,10 @@ import { defaultOpenAICompatibleErrorStructure } from '../openai-compatible-erro
 import { prepareTools } from './openai-compatible-prepare-tools'
 
 import type { OpenAICompatibleChatModelId } from './openai-compatible-chat-options'
-import type { ProviderErrorStructure } from '../openai-compatible-error'
+import type {
+  OpenAICompatibleErrorData,
+  ProviderErrorStructure,
+} from '../openai-compatible-error'
 import type { MetadataExtractor } from './openai-compatible-metadata-extractor'
 import type {
   APICallError,
@@ -63,8 +66,8 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV2 {
 
   readonly modelId: OpenAICompatibleChatModelId
   private readonly config: OpenAICompatibleChatConfig
+  private readonly errorStructure: ProviderErrorStructure<OpenAICompatibleErrorData>
   private readonly failedResponseHandler: ResponseHandler<APICallError>
-  private readonly chunkSchema // type inferred via constructor
 
   constructor(
     modelId: OpenAICompatibleChatModelId,
@@ -74,12 +77,11 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV2 {
     this.config = config
 
     // initialize error handling:
-    const errorStructure =
+    this.errorStructure =
       config.errorStructure ?? defaultOpenAICompatibleErrorStructure
-    this.chunkSchema = createOpenAICompatibleChatChunkSchema(
-      errorStructure.errorSchema,
+    this.failedResponseHandler = createJsonErrorResponseHandler(
+      this.errorStructure,
     )
-    this.failedResponseHandler = createJsonErrorResponseHandler(errorStructure)
 
     this.supportsStructuredOutputs = config.supportsStructuredOutputs ?? false
   }
@@ -327,6 +329,13 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV2 {
     const metadataExtractor =
       this.config.metadataExtractor?.createStreamExtractor()
 
+    // Build chunkSchema here (not in the constructor) so the ERROR_SCHEMA
+    // generic is bound at the use site; otherwise `z.infer<typeof schema>`
+    // degenerates and the transform callback sees `chunk: any`.
+    const chunkSchema = createOpenAICompatibleChatChunkSchema(
+      this.errorStructure.errorSchema,
+    )
+
     const { responseHeaders, value: response } = await postJsonToApi({
       url: this.config.url({
         path: '/chat/completions',
@@ -335,9 +344,7 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV2 {
       headers: combineHeaders(this.config.headers(), options.headers),
       body,
       failedResponseHandler: this.failedResponseHandler,
-      successfulResponseHandler: createEventSourceResponseHandler(
-        this.chunkSchema,
-      ),
+      successfulResponseHandler: createEventSourceResponseHandler(chunkSchema),
       abortSignal: options.abortSignal,
       fetch: this.config.fetch,
     })
@@ -386,14 +393,13 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV2 {
     return {
       stream: response.pipeThrough(
         new TransformStream<
-          ParseResult<z.infer<typeof this.chunkSchema>>,
+          ParseResult<z.infer<typeof chunkSchema>>,
           LanguageModelV2StreamPart
         >({
           start(controller) {
             controller.enqueue({ type: 'stream-start', warnings })
           },
 
-          // TODO we lost type safety on Chunk, most likely due to the error schema. MUST FIX
           transform(chunk, controller) {
             // Emit raw chunk if requested (before anything else)
             if (options.includeRawChunks) {
