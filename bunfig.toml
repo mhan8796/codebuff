@@ -3,5 +3,9 @@ linker = "hoisted"
 linkWorkspacePackages = true
 
 [test]
-exclude = ["**/*.integration.test.*", "freebuff/e2e/**"]
+pathIgnorePatterns = [
+    "**/*.integration.test.*", 
+    "freebuff/e2e/**", 
+    "agents/librarian/**"   # Comment this if you have CODEBUFF_API_KEY
+    ]
 preload = ["./sdk/test/setup-env.ts"]
